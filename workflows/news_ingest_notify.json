@@ -1,0 +1,482 @@
+{
+  "name": "News Ingest & Daily Notify",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "定时触发器（每小时）",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300],
+      "notes": "触发器节点\n输入：无\n输出：触发时间戳\n职责：每小时执行一次工作流，可在节点中修改频率"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $workflow.settings.SOURCES.split(',')[0] }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "id": "fetch-rss",
+      "name": "HTTP请求-读取RSS源",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [460, 300],
+      "notes": "RSS 获取节点\n输入：RSS URL（从工作流变量 SOURCES 读取）\n输出：RSS XML 文本\n职责：批量读取多个 RSS 源"
+    },
+    {
+      "parameters": {
+        "functionCode": "// 解析 RSS/HTML，提取新闻条目\n// 输入：RSS XML 或 HTML 文本\n// 输出：新闻列表 [{title, link, pubDate, description}]\n\nconst xml = items[0].json.data || items[0].body;\n\n// 简单的 RSS 解析（正则方式）\nconst titleReg = /<title><!\\[CDATA\\[(.+?)\\]\\]><\\/title>|<title>(.+?)<\\/title>/gs;\nconst linkReg = /<link>(.+?)<\\/link>/gs;\nconst pubDateReg = /<pubDate>(.+?)<\\/pubDate>/gs;\nconst descReg = /<description><!\\[CDATA\\[(.+?)\\]\\]><\\/description>|<description>(.+?)<\\/description>/gs;\n\nconst items_parsed = [];\nconst titles = [...xml.matchAll(titleReg)];\nconst links = [...xml.matchAll(linkReg)];\nconst pubDates = [...xml.matchAll(pubDateReg)];\nconst descs = [...xml.matchAll(descReg)];\n\n// 跳过第一个（通常是频道标题）\nfor (let i = 1; i < Math.min(titles.length, links.length); i++) {\n  const title = titles[i][1] || titles[i][2] || '';\n  const link = links[i][1] || '';\n  const pubDate = pubDates[i] ? (pubDates[i][1] || '') : '';\n  const desc = descs[i] ? (descs[i][1] || descs[i][2] || '') : '';\n  \n  if (title && link) {\n    // URL 哈希去重（SHA256）\n    const crypto = require('crypto');\n    const urlHash = crypto.createHash('sha256').update(link).digest('hex');\n    \n    items_parsed.push({\n      json: {\n        title: title.trim(),\n        url: link.trim(),\n        published_at: pubDate.trim(),\n        content: desc.trim().replace(/<[^>]*>/g, ''),  // 去除 HTML 标签\n        url_hash: urlHash,\n        source: $workflow.settings.SOURCE_NAME || 'RSS源'\n      }\n    });\n  }\n}\n\n// 去重：与已入库的对比（这里简化，实际应调用后端 API）\nconst uniqueItems = [];\nconst seenHashes = new Set();\n\nfor (const item of items_parsed) {\n  if (!seenHashes.has(item.json.url_hash)) {\n    seenHashes.add(item.json.url_hash);\n    uniqueItems.push(item);\n  }\n}\n\nconsole.log(`解析到 ${items_parsed.length} 条新闻，去重后 ${uniqueItems.length} 条`);\n\nreturn uniqueItems;"
+      },
+      "id": "parse-rss",
+      "name": "Function-解析RSS与去重",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [680, 300],
+      "notes": "RSS 解析与去重节点\n输入：RSS XML 文本\n输出：新闻对象数组 [{title, url, content, url_hash, source}]\n职责：\n1. 使用正则解析 RSS XML\n2. 提取标题、链接、发布时间、描述\n3. 计算 URL 哈希（SHA256）\n4. 内存去重（防止同一次执行重复）"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $workflow.settings.BACKEND_BASE_URL }}/api/ingest/unstructured",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $workflow.settings.JWT_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"content\": \"{{ $json.content }}\",\n  \"url\": \"{{ $json.url }}\",\n  \"type\": \"text\",\n  \"source\": \"{{ $json.source }}\"\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "backend-ingest",
+      "name": "HTTP请求-后端入库",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [900, 300],
+      "notes": "后端入库节点\n输入：新闻对象 {title, url, content, source}\n输出：入库结果 {code, message, data}\n职责：\n1. 调用后端 /api/ingest/unstructured\n2. 携带 JWT Token 认证\n3. 发送新闻数据到后端\n4. 后端会自动切分、向量化、存入 FAISS"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check-success",
+              "leftValue": "={{ $json.code }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-ingest-success",
+      "name": "IF-入库是否成功",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1120, 300],
+      "notes": "条件判断节点\n输入：入库API响应 {code, message, data}\n输出：true分支 → 成功；false分支 → 失败\n职责：判断入库是否成功（code === 0）"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "aggregate-data",
+              "name": "ingest_count",
+              "value": "={{ $('HTTP请求-后端入库').all().length }}",
+              "type": "number"
+            },
+            {
+              "id": "aggregate-success",
+              "name": "success_count",
+              "value": "={{ $('IF-入库是否成功').all().length }}",
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "aggregate-results",
+      "name": "Aggregate-汇总结果",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.2,
+      "position": [1340, 200],
+      "notes": "汇总节点\n输入：所有入库结果\n输出：统计数据 {ingest_count, success_count}\n职责：统计本次执行入库的总数和成功数"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $workflow.settings.BACKEND_BASE_URL }}/api/ask",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $workflow.settings.JWT_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"question\": \"请用要点形式总结今日新增的 {{ $json.success_count }} 条新闻，列出主要主题、来源和时间\",\n  \"top_k\": 10,\n  \"enable_rerank\": true,\n  \"enable_fallback\": false\n}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "llm-summary",
+      "name": "HTTP请求-LLM生成摘要",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1560, 200],
+      "notes": "LLM 摘要节点\n输入：汇总统计 {success_count}\n输出：RAG 响应 {answer, sources}\n职责：\n1. 调用后端 /api/ask（RAG 问答）\n2. 让 LLM 总结今日新增新闻\n3. 生成结构化摘要（用于邮件）"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Markdown 转 HTML（简易版）\n// 输入：LLM 生成的 Markdown 文本\n// 输出：HTML 格式文本\n\nconst markdown = items[0].json.data?.answer || '';\n\n// 简易 Markdown 转 HTML\nlet html = markdown\n  // 标题\n  .replace(/^### (.+)$/gm, '<h3>$1</h3>')\n  .replace(/^## (.+)$/gm, '<h2>$1</h2>')\n  .replace(/^# (.+)$/gm, '<h1>$1</h1>')\n  // 粗体\n  .replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>')\n  // 斜体\n  .replace(/\\*(.+?)\\*/g, '<em>$1</em>')\n  // 链接\n  .replace(/\\[(.+?)\\]\\((.+?)\\)/g, '<a href=\"$2\">$1</a>')\n  // 列表项\n  .replace(/^- (.+)$/gm, '<li>$1</li>')\n  .replace(/^\\* (.+)$/gm, '<li>$1</li>')\n  .replace(/^\\d+\\. (.+)$/gm, '<li>$1</li>')\n  // 换行\n  .replace(/\\n\\n/g, '</p><p>')\n  .replace(/\\n/g, '<br>');\n\n// 包裹列表项\nhtml = html.replace(/(<li>.*<\\/li>)/gs, '<ul>$1</ul>');\n\n// 包裹段落\nhtml = '<p>' + html + '</p>';\n\n// 添加邮件样式\nconst styledHtml = `\n<!DOCTYPE html>\n<html>\n<head>\n  <meta charset=\"UTF-8\">\n  <style>\n    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px; }\n    h1 { color: #0ea5e9; border-bottom: 2px solid #0ea5e9; padding-bottom: 10px; }\n    h2 { color: #0369a1; margin-top: 20px; }\n    h3 { color: #075985; }\n    ul { background: #f5f5f5; padding: 15px; border-radius: 5px; }\n    li { margin: 8px 0; }\n    a { color: #0ea5e9; text-decoration: none; }\n    a:hover { text-decoration: underline; }\n    .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; font-size: 12px; color: #666; text-align: center; }\n  </style>\n</head>\n<body>\n  <h1>🗞️ XU-News AI-RAG 日报</h1>\n  <p><strong>生成时间：</strong>{{ new Date().toLocaleString('zh-CN') }}</p>\n  <p><strong>新增新闻：</strong>{{ $('Aggregate-汇总结果').item.json.success_count }} 条</p>\n  <hr>\n  ${html}\n  <div class=\"footer\">\n    <p>本邮件由 XU-News AI-RAG 系统自动生成</p>\n    <p>访问系统：<a href=\"http://localhost:5173\">http://localhost:5173</a></p>\n  </div>\n</body>\n</html>\n`;\n\nreturn [{\n  json: {\n    html_content: styledHtml,\n    plain_content: markdown,\n    summary: items[0].json.data?.answer || '无摘要',\n    news_count: $('Aggregate-汇总结果').item.json.success_count\n  }\n}];"
+      },
+      "id": "markdown-to-html",
+      "name": "Function-Markdown转HTML",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1780, 200],
+      "notes": "Markdown 转 HTML 节点\n输入：LLM 摘要（Markdown 格式）\n输出：{html_content, plain_content, summary}\n职责：\n1. 使用正则将 Markdown 转为 HTML\n2. 添加邮件样式（CSS）\n3. 生成完整的 HTML 邮件内容"
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $workflow.settings.SMTP_USER }}",
+        "toEmail": "={{ $workflow.settings.EMAIL_TO }}",
+        "subject": "=🗞️ XU-News 日报 - {{ new Date().toLocaleDateString('zh-CN') }} - 新增 {{ $json.news_count }} 条",
+        "emailType": "html",
+        "message": "={{ $json.html_content }}",
+        "options": {
+          "allowUnauthorizedCerts": false
+        },
+        "credentials": {
+          "smtp": {
+            "id": "qq-smtp-cred",
+            "name": "QQ SMTP Credentials"
+          }
+        }
+      },
+      "id": "send-email",
+      "name": "Email-发送日报邮件",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [2000, 200],
+      "credentials": {
+        "smtp": {
+          "id": "qq-smtp-cred",
+          "name": "QQ SMTP Credentials"
+        }
+      },
+      "notes": "邮件发送节点\n输入：HTML 邮件内容\n输出：发送结果\n职责：\n1. 通过 QQ SMTP (smtp.qq.com:465/SSL) 发送邮件\n2. 收件人从工作流变量 EMAIL_TO 读取\n3. 邮件主题包含日期和新闻数量\n\n配置 SMTP 凭据：\n- Host: smtp.qq.com\n- Port: 465\n- Secure: true (SSL)\n- User: 你的QQ邮箱\n- Password: QQ邮箱授权码（非登录密码）"
+    },
+    {
+      "parameters": {
+        "functionCode": "// 错误日志记录\n// 输入：错误信息\n// 输出：格式化的日志对象\n\nconst error = $input.all()[0];\nconst errorNode = error.node || 'Unknown';\nconst errorMessage = error.error?.message || JSON.stringify(error);\n\nconst logData = {\n  timestamp: new Date().toISOString(),\n  workflow: $workflow.name,\n  execution_id: $execution.id,\n  error_node: errorNode,\n  error_message: errorMessage,\n  level: 'ERROR'\n};\n\nconsole.error('工作流执行失败:', logData);\n\nreturn [{ json: logData }];"
+      },
+      "id": "format-error",
+      "name": "Function-格式化错误",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1340, 500],
+      "notes": "错误格式化节点\n输入：错误对象\n输出：日志对象 {timestamp, workflow, error_node, error_message}\n职责：提取错误信息并格式化为日志对象"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $workflow.settings.BACKEND_BASE_URL }}/api/system/logs",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $workflow.settings.JWT_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "ignoreHttpStatusErrors": true
+        }
+      },
+      "id": "log-error",
+      "name": "HTTP请求-记录错误日志",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1560, 500],
+      "notes": "错误日志记录节点\n输入：格式化的日志对象\n输出：无\n职责：\n1. 调用后端 /api/system/logs\n2. 将错误信息写入后端日志\n3. 即使记录失败也不影响工作流"
+    },
+    {
+      "parameters": {
+        "amount": 2,
+        "unit": "seconds"
+      },
+      "id": "rate-limit",
+      "name": "Wait-速率限制（2秒）",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [680, 450],
+      "notes": "速率限制节点\n输入：任意数据\n输出：原数据（延迟后）\n职责：每个请求间隔 2 秒，遵守爬虫规范"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      },
+      "id": "merge-results",
+      "name": "Merge-合并所有结果",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [1340, 300],
+      "notes": "合并节点\n输入：多个分支的数据\n输出：合并后的数据数组\n职责：将所有入库结果合并，用于后续统计"
+    }
+  ],
+  "connections": {
+    "定时触发器（每小时）": {
+      "main": [
+        [
+          {
+            "node": "HTTP请求-读取RSS源",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP请求-读取RSS源": {
+      "main": [
+        [
+          {
+            "node": "Function-解析RSS与去重",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Function-解析RSS与去重": {
+      "main": [
+        [
+          {
+            "node": "HTTP请求-后端入库",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Wait-速率限制（2秒）",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP请求-后端入库": {
+      "main": [
+        [
+          {
+            "node": "IF-入库是否成功",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF-入库是否成功": {
+      "main": [
+        [
+          {
+            "node": "Merge-合并所有结果",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Function-格式化错误",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge-合并所有结果": {
+      "main": [
+        [
+          {
+            "node": "Aggregate-汇总结果",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate-汇总结果": {
+      "main": [
+        [
+          {
+            "node": "HTTP请求-LLM生成摘要",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP请求-LLM生成摘要": {
+      "main": [
+        [
+          {
+            "node": "Function-Markdown转HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Function-Markdown转HTML": {
+      "main": [
+        [
+          {
+            "node": "Email-发送日报邮件",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Function-格式化错误": {
+      "main": [
+        [
+          {
+            "node": "HTTP请求-记录错误日志",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait-速率限制（2秒）": {
+      "main": [
+        [
+          {
+            "node": "HTTP请求-后端入库",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": {
+    "global": {
+      "lastExecutionTime": "",
+      "totalProcessed": 0
+    }
+  },
+  "tags": [
+    {
+      "name": "新闻采集"
+    },
+    {
+      "name": "自动化"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-6-30T00:00:00.000Z",
+  "versionId": "1.0.0",
+  "variables": [
+    {
+      "key": "BACKEND_BASE_URL",
+      "type": "string",
+      "value": "http://localhost:5000",
+      "description": "后端 API 基础 URL（如 Docker 环境改为 http://backend:5000）"
+    },
+    {
+      "key": "JWT_TOKEN",
+      "type": "string",
+      "value": "your-jwt-token-here",
+      "description": "后端 JWT Token（从登录接口获取，有效期 24 小时）"
+    },
+    {
+      "key": "SOURCES",
+      "type": "string",
+      "value": "https://example.com/rss,https://news.example.org/feed",
+      "description": "RSS 源列表，逗号分隔（支持多个）"
+    },
+    {
+      "key": "SOURCE_NAME",
+      "type": "string",
+      "value": "示例新闻网",
+      "description": "新闻来源名称（用于标注新闻来源）"
+    },
+    {
+      "key": "SMTP_USER",
+      "type": "string",
+      "value": "your-email@qq.com",
+      "description": "QQ 邮箱地址（发件人）"
+    },
+    {
+      "key": "EMAIL_TO",
+      "type": "string",
+      "value": "recipient@example.com",
+      "description": "收件人邮箱地址（可多个，逗号分隔）"
+    }
+  ]
+}

@@ -1,0 +1,398 @@
+{
+  "name": "News Ingest & Daily Notify (Free)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "定时触发器（每小时）",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300],
+      "notes": "⏰ 可在此节点修改执行频率"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ==================== 配置区（在此修改）====================\nconst CONFIG = {\n  BACKEND_BASE_URL: 'http://localhost:5000',\n  JWT_TOKEN: 'your-jwt-token-here',  // ⚠️ 必须修改：从浏览器 F12 → Application → Local Storage → xu_news_token 复制\n  RSS_SOURCES: [\n    'https://example.com/rss',\n    'https://news.example.org/feed'\n  ],\n  SOURCE_NAME: '示例新闻网',\n  SMTP_USER: 'your-email@qq.com',    // ⚠️ 必须修改：你的 QQ 邮箱\n  SMTP_PASS: 'your-qq-auth-code',    // ⚠️ 必须修改：QQ 邮箱授权码（16位）\n  SMTP_TO: 'recipient@example.com'   // ⚠️ 必须修改：接收邮件的邮箱\n};\n\n// ==================== 保存到输出 ====================\nreturn [{ json: CONFIG }];"
+      },
+      "id": "config-node",
+      "name": "Code-配置中心",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300],
+      "notes": "📝 配置中心节点\n\n⚠️ 请在此节点的代码中修改以下配置：\n\n1. JWT_TOKEN - 从前端登录后，F12 → Application → Local Storage 复制\n2. SMTP_USER - 你的 QQ 邮箱\n3. SMTP_PASS - QQ 邮箱授权码（设置 → 账户 → POP3/SMTP 服务）\n4. SMTP_TO - 接收邮件的邮箱\n5. RSS_SOURCES - RSS 源列表（可多个）"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.RSS_SOURCES[0] }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "fetch-rss",
+      "name": "HTTP请求-读取RSS源",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [680, 300],
+      "notes": "📡 RSS 获取节点\n输入：配置对象\n输出：RSS XML 文本"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 解析 RSS/HTML，提取新闻条目\nconst config = $('Code-配置中心').first().json;\nconst xml = $input.first().body || $input.first().json.data || '';\n\nif (!xml) {\n  console.error('RSS 内容为空');\n  return [];\n}\n\n// 简单的 RSS 解析（正则方式）\ntry {\n  const titleReg = /<title>(?:<!\\[CDATA\\[)?(.+?)(?:\\]\\]>)?<\\/title>/gs;\n  const linkReg = /<link>(?:<!\\[CDATA\\[)?(.+?)(?:\\]\\]>)?<\\/link>/gs;\n  const pubDateReg = /<pubDate>(.+?)<\\/pubDate>/gs;\n  const descReg = /<description>(?:<!\\[CDATA\\[)?([\\s\\S]+?)(?:\\]\\]>)?<\\/description>/gs;\n\n  const titles = [...xml.matchAll(titleReg)];\n  const links = [...xml.matchAll(linkReg)];\n  const pubDates = [...xml.matchAll(pubDateReg)];\n  const descs = [...xml.matchAll(descReg)];\n\n  const items_parsed = [];\n  const seenUrls = new Set();\n\n  // 跳过第一个（频道信息）\n  for (let i = 1; i < Math.min(titles.length, links.length); i++) {\n    const title = (titles[i][1] || '').trim();\n    const link = (links[i][1] || '').trim();\n    const pubDate = pubDates[i] ? (pubDates[i][1] || '').trim() : '';\n    const desc = descs[i] ? (descs[i][1] || '').trim() : '';\n    \n    if (title && link && !seenUrls.has(link)) {\n      seenUrls.add(link);\n      \n      // 清理内容\n      const cleanContent = desc.replace(/<[^>]*>/g, '').replace(/&[a-z]+;/gi, ' ').trim();\n      \n      items_parsed.push({\n        json: {\n          title: title,\n          url: link,\n          published_at: pubDate,\n          content: cleanContent || title,  // 如果没有描述，使用标题\n          source: config.SOURCE_NAME,\n          type: 'text'\n        }\n      });\n    }\n  }\n\n  console.log(`✓ 解析到 ${items_parsed.length} 条新闻`);\n  return items_parsed;\n  \n} catch (error) {\n  console.error('RSS 解析失败:', error);\n  return [];\n}"
+      },
+      "id": "parse-rss",
+      "name": "Code-解析RSS与去重",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300],
+      "notes": "🔍 RSS 解析节点\n输入：RSS XML\n输出：新闻数组 [{title, url, content, source}]"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Code-配置中心').first().json.BACKEND_BASE_URL }}/api/ingest/unstructured",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Code-配置中心').first().json.JWT_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "backend-ingest",
+      "name": "HTTP请求-后端入库",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1120, 300],
+      "notes": "📥 后端入库节点\n输入：新闻对象\n输出：入库结果"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check-success",
+              "leftValue": "={{ $json.code }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-success",
+      "name": "IF-入库是否成功",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1340, 300],
+      "notes": "✔️ 条件判断：code === 0"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 统计成功/失败数量\nconst allResults = $input.all();\nconst successCount = allResults.filter(item => item.json.code === 0).length;\nconst failedCount = allResults.length - successCount;\n\nconsole.log(`入库统计: 成功 ${successCount}, 失败 ${failedCount}`);\n\nreturn [{\n  json: {\n    total: allResults.length,\n    success: successCount,\n    failed: failedCount,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "aggregate",
+      "name": "Code-汇总统计",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 200],
+      "notes": "📊 汇总节点\n输入：所有入库结果\n输出：统计 {total, success, failed}"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Code-配置中心').first().json.BACKEND_BASE_URL }}/api/ask",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Code-配置中心').first().json.JWT_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"question\": \"请用要点形式总结今日新增的 {{ $json.success }} 条新闻，列出主要主题、来源和时间\",\n  \"top_k\": 10,\n  \"enable_rerank\": true,\n  \"enable_fallback\": false\n}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "llm-summary",
+      "name": "HTTP请求-LLM摘要",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1780, 200],
+      "notes": "🤖 LLM 生成摘要\n输入：统计数据\n输出：RAG 答案"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Markdown 转 HTML（简易版）\nconst config = $('Code-配置中心').first().json;\nconst stats = $('Code-汇总统计').first().json;\nconst llmResponse = $input.first().json;\nconst markdown = llmResponse.data?.answer || '暂无摘要';\n\n// 简易 Markdown 转 HTML\nlet html = markdown\n  .replace(/^### (.+)$/gm, '<h3>$1</h3>')\n  .replace(/^## (.+)$/gm, '<h2>$1</h2>')\n  .replace(/^# (.+)$/gm, '<h1>$1</h1>')\n  .replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>')\n  .replace(/\\*(.+?)\\*/g, '<em>$1</em>')\n  .replace(/\\[(.+?)\\]\\((.+?)\\)/g, '<a href=\"$2\" target=\"_blank\">$1</a>')\n  .replace(/^- (.+)$/gm, '<li>$1</li>')\n  .replace(/^\\* (.+)$/gm, '<li>$1</li>')\n  .replace(/^\\d+\\. (.+)$/gm, '<li>$1</li>')\n  .replace(/\\n\\n/g, '</p><p>')\n  .replace(/\\n/g, '<br>');\n\nhtml = html.replace(/(<li>.*?<\\/li>)/gs, '<ul>$1</ul>');\nhtml = '<div>' + html + '</div>';\n\nconst now = new Date();\nconst dateStr = now.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' });\nconst timeStr = now.toLocaleTimeString('zh-CN');\n\n// 完整 HTML 邮件\nconst fullHtml = `\n<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n  <meta charset=\"UTF-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n  <title>XU-News 日报</title>\n  <style>\n    body {\n      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;\n      line-height: 1.8;\n      color: #333;\n      max-width: 800px;\n      margin: 0 auto;\n      padding: 20px;\n      background-color: #f5f5f5;\n    }\n    .container {\n      background: white;\n      border-radius: 8px;\n      box-shadow: 0 2px 8px rgba(0,0,0,0.1);\n      padding: 30px;\n    }\n    .header {\n      text-align: center;\n      padding-bottom: 20px;\n      border-bottom: 3px solid #0ea5e9;\n      margin-bottom: 30px;\n    }\n    .header h1 {\n      color: #0ea5e9;\n      margin: 0 0 10px 0;\n      font-size: 28px;\n    }\n    .meta {\n      color: #666;\n      font-size: 14px;\n    }\n    .stats {\n      display: flex;\n      justify-content: space-around;\n      background: #f0f9ff;\n      padding: 20px;\n      border-radius: 8px;\n      margin-bottom: 30px;\n    }\n    .stat-item {\n      text-align: center;\n    }\n    .stat-number {\n      font-size: 32px;\n      font-weight: bold;\n      color: #0ea5e9;\n    }\n    .stat-label {\n      font-size: 14px;\n      color: #666;\n      margin-top: 5px;\n    }\n    h2 { color: #0369a1; margin-top: 30px; }\n    h3 { color: #075985; margin-top: 20px; }\n    ul {\n      background: #f9fafb;\n      padding: 20px 20px 20px 40px;\n      border-left: 4px solid #0ea5e9;\n      border-radius: 4px;\n      margin: 15px 0;\n    }\n    li {\n      margin: 10px 0;\n      line-height: 1.6;\n    }\n    a {\n      color: #0ea5e9;\n      text-decoration: none;\n    }\n    a:hover {\n      text-decoration: underline;\n    }\n    .footer {\n      margin-top: 40px;\n      padding-top: 20px;\n      border-top: 1px solid #e5e7eb;\n      text-align: center;\n      font-size: 12px;\n      color: #9ca3af;\n    }\n    .btn {\n      display: inline-block;\n      padding: 12px 24px;\n      background: #0ea5e9;\n      color: white;\n      text-decoration: none;\n      border-radius: 6px;\n      margin-top: 20px;\n    }\n    .btn:hover {\n      background: #0284c7;\n    }\n  </style>\n</head>\n<body>\n  <div class=\"container\">\n    <div class=\"header\">\n      <h1>🗞️ XU-News AI-RAG 日报</h1>\n      <div class=\"meta\">\n        <p>📅 ${dateStr} ${timeStr}</p>\n      </div>\n    </div>\n\n    <div class=\"stats\">\n      <div class=\"stat-item\">\n        <div class=\"stat-number\">${stats.total}</div>\n        <div class=\"stat-label\">处理总数</div>\n      </div>\n      <div class=\"stat-item\">\n        <div class=\"stat-number\">${stats.success}</div>\n        <div class=\"stat-label\">成功入库</div>\n      </div>\n      <div class=\"stat-item\">\n        <div class=\"stat-number\">${stats.failed}</div>\n        <div class=\"stat-label\">失败/重复</div>\n      </div>\n    </div>\n\n    <h2>📰 今日新闻摘要</h2>\n    ${html}\n\n    <div style=\"text-align: center;\">\n      <a href=\"http://localhost:5173\" class=\"btn\">访问系统查看详情</a>\n    </div>\n\n    <div class=\"footer\">\n      <p>本邮件由 XU-News AI-RAG 系统自动生成</p>\n      <p>基于 RAG 技术 · 智能问答 · 新闻聚类</p>\n    </div>\n  </div>\n</body>\n</html>\n`;\n\nreturn [{\n  json: {\n    html_content: fullHtml,\n    subject: `🗞️ XU-News 日报 - ${dateStr} - 新增 ${stats.success} 条`,\n    to_email: config.SMTP_TO,\n    from_email: config.SMTP_USER,\n    smtp_host: 'smtp.qq.com',\n    smtp_port: 465,\n    smtp_user: config.SMTP_USER,\n    smtp_pass: config.SMTP_PASS,\n    stats: stats\n  }\n}];"
+      },
+      "id": "markdown-html",
+      "name": "Code-生成HTML邮件",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 200],
+      "notes": "🎨 HTML 生成节点\n输入：LLM 摘要\n输出：完整 HTML 邮件"
+    },
+    {
+      "parameters": {
+        "operation": "sendEmail",
+        "email": "={{ $json.to_email }}",
+        "fromEmail": "={{ $json.from_email }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "html",
+        "html": "={{ $json.html_content }}",
+        "options": {
+          "allowUnauthorizedCerts": false
+        },
+        "transportOptions": {
+          "host": "={{ $json.smtp_host }}",
+          "port": "={{ $json.smtp_port }}",
+          "secure": true,
+          "auth": {
+            "user": "={{ $json.smtp_user }}",
+            "pass": "={{ $json.smtp_pass }}"
+          }
+        }
+      },
+      "id": "send-email",
+      "name": "Email-发送日报",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [2220, 200],
+      "notes": "📧 发送邮件节点\n\n⚠️ 如果无法发送，请检查：\n1. QQ 邮箱是否开启 SMTP\n2. 授权码是否正确（16位）\n3. 防火墙是否允许 smtp.qq.com:465"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 错误处理\nconst config = $('Code-配置中心').first().json;\nconst error = $input.first();\n\nconst logData = {\n  timestamp: new Date().toISOString(),\n  workflow: 'News Ingest & Daily Notify',\n  error_node: error.node || 'Unknown',\n  error_message: error.error?.message || JSON.stringify(error),\n  level: 'ERROR'\n};\n\nconsole.error('❌ 工作流执行失败:', logData);\n\nreturn [{\n  json: {\n    ...logData,\n    backend_url: config.BACKEND_BASE_URL + '/api/system/logs',\n    jwt_token: config.JWT_TOKEN\n  }\n}];"
+      },
+      "id": "error-handler",
+      "name": "Code-错误处理",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 500],
+      "notes": "❌ 错误处理节点\n输入：错误信息\n输出：格式化日志"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.backend_url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.jwt_token }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "ignoreHttpStatusErrors": true
+        }
+      },
+      "id": "log-error",
+      "name": "HTTP请求-记录错误",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1780, 500],
+      "notes": "📝 记录错误到后端\n（即使失败也不影响）"
+    },
+    {
+      "parameters": {
+        "amount": 2,
+        "unit": "seconds"
+      },
+      "id": "wait",
+      "name": "Wait-速率限制2秒",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [900, 450],
+      "notes": "⏱️ 速率限制（遵守爬虫规范）"
+    }
+  ],
+  "connections": {
+    "定时触发器（每小时）": {
+      "main": [
+        [
+          {
+            "node": "Code-配置中心",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code-配置中心": {
+      "main": [
+        [
+          {
+            "node": "HTTP请求-读取RSS源",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP请求-读取RSS源": {
+      "main": [
+        [
+          {
+            "node": "Code-解析RSS与去重",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code-解析RSS与去重": {
+      "main": [
+        [
+          {
+            "node": "HTTP请求-后端入库",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Wait-速率限制2秒",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP请求-后端入库": {
+      "main": [
+        [
+          {
+            "node": "IF-入库是否成功",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF-入库是否成功": {
+      "main": [
+        [
+          {
+            "node": "Code-汇总统计",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code-错误处理",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code-汇总统计": {
+      "main": [
+        [
+          {
+            "node": "HTTP请求-LLM摘要",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP请求-LLM摘要": {
+      "main": [
+        [
+          {
+            "node": "Code-生成HTML邮件",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code-生成HTML邮件": {
+      "main": [
+        [
+          {
+            "node": "Email-发送日报",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code-错误处理": {
+      "main": [
+        [
+          {
+            "node": "HTTP请求-记录错误",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait-速率限制2秒": {
+      "main": [
+        [
+          {
+            "node": "HTTP请求-后端入库",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2026-6-30T00:00:00.000Z",
+  "versionId": "1.0.0"
+}

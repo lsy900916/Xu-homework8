@@ -1,0 +1,311 @@
+{
+  "name": "News Crawler Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "name": "定时触发（每小时）",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://example.com/news",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "name": "HTTP请求-获取新闻列表",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "dataPropertyName": "html",
+        "extractionValues": {
+          "values": [
+            {
+              "key": "title",
+              "cssSelector": "h2.news-title",
+              "returnValue": "text"
+            },
+            {
+              "key": "url",
+              "cssSelector": "a.news-link",
+              "returnValue": "attribute",
+              "attribute": "href"
+            },
+            {
+              "key": "published_at",
+              "cssSelector": "span.news-date",
+              "returnValue": "text"
+            }
+          ]
+        }
+      },
+      "name": "HTML提取-新闻列表",
+      "type": "n8n-nodes-base.html",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 10,
+        "options": {}
+      },
+      "name": "循环处理新闻",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{$json[\"url\"]}}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "name": "HTTP请求-获取新闻详情",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "dataPropertyName": "html",
+        "extractionValues": {
+          "values": [
+            {
+              "key": "title",
+              "cssSelector": "h1.article-title",
+              "returnValue": "text"
+            },
+            {
+              "key": "content",
+              "cssSelector": "div.article-content",
+              "returnValue": "text"
+            },
+            {
+              "key": "author",
+              "cssSelector": "span.article-author",
+              "returnValue": "text"
+            },
+            {
+              "key": "source",
+              "cssSelector": "span.article-source",
+              "returnValue": "text"
+            }
+          ]
+        }
+      },
+      "name": "HTML提取-新闻详情",
+      "type": "n8n-nodes-base.html",
+      "typeVersion": 1,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const item = items[0].json;\n\n// 数据清洗\nlet cleanedData = {\n  title: item.title?.trim() || '',\n  content: item.content?.replace(/<[^>]*>/g, '').trim() || '',\n  url: item.url || '',\n  author: item.author?.trim() || '',\n  source: item.source?.trim() || '',\n  published_at: item.published_at || new Date().toISOString()\n};\n\n// 验证必填字段\nif (!cleanedData.title || !cleanedData.content || !cleanedData.url) {\n  return [];\n}\n\n// 验证内容长度\nif (cleanedData.content.length < 100) {\n  return [];\n}\n\nreturn [{ json: cleanedData }];"
+      },
+      "name": "数据清洗与验证",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1450, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://backend:5000/api/v1/news/ingest",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{$credentials.n8nApiKey}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "title",
+              "value": "={{$json[\"title\"]}}"
+            },
+            {
+              "name": "content",
+              "value": "={{$json[\"content\"]}}"
+            },
+            {
+              "name": "url",
+              "value": "={{$json[\"url\"]}}"
+            },
+            {
+              "name": "author",
+              "value": "={{$json[\"author\"]}}"
+            },
+            {
+              "name": "source",
+              "value": "={{$json[\"source\"]}}"
+            },
+            {
+              "name": "published_at",
+              "value": "={{$json[\"published_at\"]}}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "name": "POST-后端入库API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [1650, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const response = items[0].json;\n\nconsole.log('入库结果:', JSON.stringify(response, null, 2));\n\nreturn items;"
+      },
+      "name": "日志记录",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1850, 300]
+    },
+    {
+      "parameters": {
+        "amount": 2,
+        "unit": "seconds"
+      },
+      "name": "速率限制（2秒）",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [850, 500]
+    }
+  ],
+  "connections": {
+    "定时触发（每小时）": {
+      "main": [
+        [
+          {
+            "node": "HTTP请求-获取新闻列表",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP请求-获取新闻列表": {
+      "main": [
+        [
+          {
+            "node": "HTML提取-新闻列表",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTML提取-新闻列表": {
+      "main": [
+        [
+          {
+            "node": "循环处理新闻",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "循环处理新闻": {
+      "main": [
+        [
+          {
+            "node": "HTTP请求-获取新闻详情",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "速率限制（2秒）",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP请求-获取新闻详情": {
+      "main": [
+        [
+          {
+            "node": "HTML提取-新闻详情",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTML提取-新闻详情": {
+      "main": [
+        [
+          {
+            "node": "数据清洗与验证",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据清洗与验证": {
+      "main": [
+        [
+          {
+            "node": "POST-后端入库API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST-后端入库API": {
+      "main": [
+        [
+          {
+            "node": "日志记录",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "速率限制（2秒）": {
+      "main": [
+        [
+          {
+            "node": "循环处理新闻",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": []
+}
+

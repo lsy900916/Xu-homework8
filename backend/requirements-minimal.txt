@@ -1,0 +1,44 @@
+# ==================== 极简版依赖（无版本限制，适合快速安装）====================
+
+# Flask 核心
+Flask
+Flask-CORS
+Flask-JWT-Extended
+python-dotenv
+gunicorn
+
+# 数据库
+SQLAlchemy
+
+# AI/ML
+sentence-transformers
+faiss-cpu
+
+# 数据处理
+pandas
+openpyxl
+beautifulsoup4
+lxml
+html2text
+jieba
+scikit-learn
+numpy
+
+# 安全
+bcrypt
+passlib
+PyJWT
+
+# 工具
+httpx
+loguru
+pydantic
+pydantic-settings
+python-dateutil
+requests
+
+# 测试
+pytest
+pytest-cov
+pytest-mock
+
