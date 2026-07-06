@@ -34,7 +34,7 @@
 
 ```bash
 # 克隆项目（如果还没有）
-git clone https://github.com/your-org/xu-news-ai-rag.git
+git clone https://github.com/xxx.git
 cd xu-news-ai-rag
 ```
 
@@ -136,7 +136,7 @@ JWT_SECRET_KEY=xu-news-secret-key-2026
 ### 3.4 初始化数据库
 
 ```bash
-python scripts/init_db.py
+python -m scripts/init_db
 ```
 
 **期望输出**:
@@ -149,7 +149,7 @@ python scripts/init_db.py
 ### 3.5 创建管理员账户
 
 ```bash
-python scripts/create_admin.py --email admin@xu-news.com --password Admin123
+python -m scripts/create_admin --email admin@xu-news.com --password Admin123
 ```
 
 **期望输出**:

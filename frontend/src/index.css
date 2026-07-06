@@ -2,6 +2,15 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  input {
+    @apply text-gray-600;
+  }
+  textarea {
+    @apply text-gray-600;
+  }
+}
+
 :root {
   font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
@@ -43,4 +52,8 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: #555;
+}
+
+input {
+  color: #333;
 }
