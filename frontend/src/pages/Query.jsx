@@ -1,11 +1,11 @@
 /**
- * RAG 查询页面
+ * Agent 查询页面
  */
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { ragAPI } from "../services/api";
+import { agentAPI } from "../services/api";
 import LoadingSpinner from "../components/LoadingSpinner";
-import { Send, ExternalLink, AlertCircle, MessageSquare } from "lucide-react";
+import { Send, ExternalLink, AlertCircle, MessageSquare, Sparkles } from "lucide-react";
 import toast from "react-hot-toast";
 
 export default function Query() {
@@ -13,7 +13,7 @@ export default function Query() {
   const [result, setResult] = useState(null);
 
   const queryMutation = useMutation({
-    mutationFn: ragAPI.query,
+    mutationFn: agentAPI.query,
     onSuccess: (response) => {
       setResult(response.data);
       toast.success("查询成功！");
@@ -30,17 +30,21 @@ export default function Query() {
 
     queryMutation.mutate({
       question: question.trim(),
-      top_k: 5,
-      enable_rerank: true,
-      enable_fallback: true,
+      options: {
+        enable_fallback: true,
+        top_k: 5,
+      },
     });
   };
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       <div>
-        <h1 className="text-3xl font-bold text-gray-900">知识库查询</h1>
-        <p className="text-gray-600 mt-2">基于 RAG 的智能问答系统</p>
+        <h1 className="text-3xl font-bold text-gray-900 flex items-center gap-2">
+          <Sparkles className="text-primary-600" size={32} />
+          Agent 智能问答
+        </h1>
+        <p className="text-gray-600 mt-2">基于 Agent Skill 框架的智能问答系统</p>
       </div>
 
       {/* 查询表单 */}
@@ -67,7 +71,7 @@ export default function Query() {
             {queryMutation.isPending ? (
               <>
                 <LoadingSpinner size="sm" />
-                <span>查询中...</span>
+                <span>Agent 思考中...</span>
               </>
             ) : (
               <>
@@ -109,71 +113,84 @@ export default function Query() {
 
             {/* 统计信息 */}
             <div className="mt-4 pt-4 border-t flex flex-wrap gap-4 text-sm text-gray-600">
-              <span>检索方法: {result.retrieval_stats.method}</span>
-              <span>召回数量: {result.retrieval_stats.total_retrieved}</span>
-              <span>重排后: {result.retrieval_stats.total_reranked}</span>
-              <span>
-                LLM 耗时: {result.llm_stats.response_time.toFixed(2)}s
-              </span>
-              <span>总耗时: {result.total_time.toFixed(2)}s</span>
+              {result.retrieval_stats && (
+                <>
+                  <span>检索方法: {result.retrieval_stats.method}</span>
+                  <span>召回数量: {result.retrieval_stats.total_retrieved}</span>
+                  <span>重排后: {result.retrieval_stats.total_reranked}</span>
+                </>
+              )}
+              {result.execution_time && (
+                <span>总耗时: {result.execution_time.toFixed(2)}s</span>
+              )}
+              {result.plan && result.plan.length > 0 && (
+                <span>执行步骤: {result.plan.join(" → ")}</span>
+              )}
             </div>
           </div>
 
           {/* 引用来源 */}
           <div className="bg-white rounded-lg shadow p-6">
             <h2 className="text-lg font-bold text-gray-900 mb-4">引用来源</h2>
-            <div className="space-y-4">
-              {result.sources.map((source, index) => (
-                <div
-                  key={index}
-                  className="p-4 border border-gray-200 rounded-lg hover:border-primary-300 transition-colors"
-                >
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="text-xs font-medium text-primary-600 bg-primary-50 px-2 py-1 rounded">
-                          来源 {index + 1}
-                        </span>
-                        {source.source_type === "fallback" && (
-                          <span className="text-xs font-medium text-yellow-600 bg-yellow-50 px-2 py-1 rounded">
-                            网络搜索
+            {result.sources && result.sources.length > 0 ? (
+              <div className="space-y-4">
+                {result.sources.map((source, index) => (
+                  <div
+                    key={source.chunk_id || index}
+                    className="p-4 border border-gray-200 rounded-lg hover:border-primary-300 transition-colors"
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="text-xs font-medium text-primary-600 bg-primary-50 px-2 py-1 rounded">
+                            来源 {index + 1}
                           </span>
+                          {source.chunk_id && source.chunk_id.startsWith("fallback") && (
+                            <span className="text-xs font-medium text-yellow-600 bg-yellow-50 px-2 py-1 rounded">
+                              网络搜索
+                            </span>
+                          )}
+                        </div>
+                        <h3 className="font-medium text-gray-900 mb-2">
+                          {source.article_title || "无标题"}
+                        </h3>
+                        <p className="text-sm text-gray-600 line-clamp-3">
+                          {source.text}
+                        </p>
+                        {source.article_url && (
+                          <a
+                            href={source.article_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-sm text-primary-600 hover:text-primary-700 mt-2"
+                          >
+                            查看原文
+                            <ExternalLink size={14} />
+                          </a>
                         )}
                       </div>
-                      <h3 className="font-medium text-gray-900 mb-2">
-                        {source.article_title || "无标题"}
-                      </h3>
-                      <p className="text-sm text-gray-600 line-clamp-3">
-                        {source.text}
-                      </p>
-                      {source.article_url && (
-                        <a
-                          href={source.article_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-sm text-primary-600 hover:text-primary-700 mt-2"
-                        >
-                          查看原文
-                          <ExternalLink size={14} />
-                        </a>
-                      )}
-                    </div>
-                    <div className="text-right">
-                      {source.retrieval_score !== undefined && (
-                        <p className="text-xs text-gray-500">
-                          相似度: {source.retrieval_score.toFixed(3)}
-                        </p>
-                      )}
-                      {source.rerank_score !== undefined && (
-                        <p className="text-xs text-gray-500">
-                          重排分数: {source.rerank_score.toFixed(3)}
-                        </p>
-                      )}
+                      <div className="text-right">
+                        {source.retrieval_score !== undefined && (
+                          <p className="text-xs text-gray-500">
+                            相似度: {source.retrieval_score.toFixed(3)}
+                          </p>
+                        )}
+                        {source.rerank_score !== undefined && (
+                          <p className="text-xs text-gray-500">
+                            重排分数: {source.rerank_score.toFixed(3)}
+                          </p>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-8 text-gray-500">
+                <AlertCircle size={48} className="mx-auto mb-4 opacity-50" />
+                <p>暂无引用来源</p>
+              </div>
+            )}
           </div>
         </div>
       )}

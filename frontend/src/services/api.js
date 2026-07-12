@@ -128,6 +128,59 @@ export const reportAPI = {
 };
 
 /**
+ * Agent API
+ */
+export const agentAPI = {
+  /**
+   * Agent 查询接口
+   * @param {Object} data - 查询参数
+   * @param {string} data.question - 用户问题
+   * @param {Object} [data.options] - 可选参数
+   * @param {boolean} [data.options.enable_fallback] - 是否启用回退搜索
+   * @param {number} [data.options.top_k] - 返回结果数量
+   */
+  query: (data) => apiClient.post("/agent/query", data),
+
+  /**
+   * Agent 分析接口
+   * @param {Object} data - 分析参数
+   * @param {string} data.type - 分析类型 (clusters/keywords/trend)
+   * @param {string} [data.time_range] - 时间范围 (daily/weekly/monthly)
+   * @param {number} [data.top_n] - 返回数量（关键词统计时使用）
+   * @param {string} [data.keyword] - 关键词（趋势分析时使用）
+   */
+  analyze: (data) => apiClient.post("/agent/analyze", data),
+
+  /**
+   * Agent 入库接口
+   * @param {Object} data - 入库参数
+   * @param {Array} data.news_data - 新闻数据列表
+   * @param {string} [data.source] - 数据源
+   */
+  ingest: (data) => apiClient.post("/agent/ingest", data),
+
+  /**
+   * 获取 Agent 记忆（对话历史）
+   */
+  getMemory: () => apiClient.get("/agent/memory"),
+
+  /**
+   * 清空 Agent 记忆（对话历史）
+   */
+  clearMemory: () => apiClient.delete("/agent/memory"),
+
+  /**
+   * 获取已注册的 Skill 列表
+   */
+  getSkills: () => apiClient.get("/agent/skills"),
+
+  /**
+   * 获取已注册的 Tool 列表
+   */
+  getTools: () => apiClient.get("/agent/tools"),
+};
+
+/**
  * 系统 API
  */
 export const systemAPI = {

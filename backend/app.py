@@ -16,6 +16,7 @@ from apis.health import health_bp
 from apis.ingest import ingest_bp
 from apis.search import search_bp
 from apis.reports import reports_bp
+from apis.agent_api import agent_bp
 from auth.jwt import auth_bp
 
 
@@ -92,6 +93,7 @@ def create_app():
     app.register_blueprint(ingest_bp, url_prefix='/api/ingest')
     app.register_blueprint(search_bp, url_prefix='/api')
     app.register_blueprint(reports_bp, url_prefix='/api/report')
+    app.register_blueprint(agent_bp, url_prefix='/api/agent')
     
     # ==================== 全局错误处理 ====================
     @app.errorhandler(404)
