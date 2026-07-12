@@ -17,6 +17,7 @@ def client():
     
     with app.test_client() as client:
         with app.app_context():
+            Base.metadata.create_all(engine)
             Base.metadata.drop_all(engine)
             init_db()
         yield client

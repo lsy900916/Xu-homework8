@@ -15,7 +15,8 @@ def client():
     
     with app.test_client() as client:
         with app.app_context():
-            # 重建数据库
+            # 先创建表确保存在，再删除，最后重新初始化
+            Base.metadata.create_all(engine)
             Base.metadata.drop_all(engine)
             init_db()
         
